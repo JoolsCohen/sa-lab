@@ -1,13 +1,65 @@
 import { useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 
+// Сколько вопросов показываем за одну попытку.
+const QUESTIONS_PER_ATTEMPT = 15
+
+// Перемешивание массива методом Fisher–Yates.
+function shuffleArray(items) {
+  const shuffled = [...items]
+
+  for (let i = shuffled.length - 1; i > 0; i -= 1) {
+    const randomIndex = Math.floor(Math.random() * (i + 1))
+
+    ;[shuffled[i], shuffled[randomIndex]] = [
+      shuffled[randomIndex],
+      shuffled[i],
+    ]
+  }
+
+  return shuffled
+}
+
+// Выбирает случайные вопросы и перемешивает варианты ответов.
+// Правильный ответ перемещается вместе со своим текстом.
+function createQuizQuestions(questionBank) {
+  if (!Array.isArray(questionBank) || questionBank.length === 0) {
+    return []
+  }
+
+  const selectedQuestions = shuffleArray(questionBank).slice(
+    0,
+    Math.min(QUESTIONS_PER_ATTEMPT, questionBank.length),
+  )
+
+  return selectedQuestions.map((question) => {
+    const pairedOptions = question.options.map((text, index) => ({
+      text,
+      isCorrect: index === question.correctAnswer,
+    }))
+
+    const shuffledOptions = shuffleArray(pairedOptions)
+
+    return {
+      ...question,
+      options: shuffledOptions.map((option) => option.text),
+      correctAnswer: shuffledOptions.findIndex(
+        (option) => option.isCorrect,
+      ),
+    }
+  })
+}
+
+// Сохраняет результат попытки в Supabase.
 async function saveAttempt(answers, questions, topicId, topicTitle) {
   const {
     data: { user },
     error: userError,
   } = await supabase.auth.getUser()
 
-  if (userError) throw userError
+  if (userError) {
+    throw userError
+  }
 
   if (!user) {
     throw new Error('Для сохранения результата нужно войти в аккаунт.')
@@ -44,7 +96,9 @@ async function saveAttempt(answers, questions, topicId, topicTitle) {
     .from('quiz_attempts')
     .insert(attempt)
 
-  if (error) throw error
+  if (error) {
+    throw error
+  }
 
   return true
 }
@@ -56,6 +110,12 @@ function Quiz({
   topicId,
   topicTitle,
 }) {
+  // Исходный questions остаётся полным банком.
+  // quizQuestions содержит только текущую случайную выборку.
+  const [quizQuestions, setQuizQuestions] = useState(() =>
+    createQuizQuestions(questions),
+  )
+
   const [currentIndex, setCurrentIndex] = useState(0)
   const [selectedOption, setSelectedOption] = useState(null)
   const [checked, setChecked] = useState(false)
@@ -64,14 +124,16 @@ function Quiz({
   const [resultSaved, setResultSaved] = useState(null)
   const [saving, setSaving] = useState(false)
 
-  const currentQuestion = questions[currentIndex]
+  const currentQuestion = quizQuestions[currentIndex]
 
-  const score = questions.reduce((total, question, index) => {
+  const score = quizQuestions.reduce((total, question, index) => {
     return total + (answers[index] === question.correctAnswer ? 1 : 0)
   }, 0)
 
-  async function checkAnswer() {
-    if (selectedOption === null || checked) return
+  function checkAnswer() {
+    if (selectedOption === null || checked) {
+      return
+    }
 
     const updatedAnswers = [...answers]
     updatedAnswers[currentIndex] = selectedOption
@@ -81,15 +143,17 @@ function Quiz({
   }
 
   async function nextQuestion() {
-    if (!checked || saving) return
+    if (!checked || saving) {
+      return
+    }
 
-    if (currentIndex === questions.length - 1) {
+    if (currentIndex === quizQuestions.length - 1) {
       setSaving(true)
 
       try {
         await saveAttempt(
           answers,
-          questions,
+          quizQuestions,
           topicId,
           topicTitle,
         )
@@ -116,16 +180,37 @@ function Quiz({
   }
 
   function restartQuiz() {
+    // Для новой попытки выбираем другой случайный набор.
+    setQuizQuestions(createQuizQuestions(questions))
+
     setCurrentIndex(0)
     setSelectedOption(null)
     setChecked(false)
     setAnswers([])
     setFinished(false)
     setResultSaved(null)
+    setSaving(false)
+  }
+
+  if (quizQuestions.length === 0) {
+    return (
+      <section className="quiz-page">
+        <button className="back-button" onClick={onBack}>
+          ← К темам
+        </button>
+
+        <div className="quiz-result">
+          <h2>В этой теме пока нет вопросов</h2>
+          <p>Добавь вопросы в банк темы и попробуй снова.</p>
+        </div>
+      </section>
+    )
   }
 
   if (finished) {
-    const percentage = Math.round((score / questions.length) * 100)
+    const percentage = Math.round(
+      (score / quizQuestions.length) * 100,
+    )
 
     return (
       <section className="quiz-page">
@@ -149,7 +234,7 @@ function Quiz({
           </h2>
 
           <p>
-            Правильных ответов: {score} из {questions.length}
+            Правильных ответов: {score} из {quizQuestions.length}
           </p>
 
           <p
@@ -162,15 +247,21 @@ function Quiz({
           >
             {resultSaved === true
               ? '✓ Результат сохранён в облаке'
-              : 'Не удалось сохранить результат. Попробуй ещё раз после проверки соединения.'}
+              : 'Не удалось сохранить результат. Проверь соединение и настройки Supabase.'}
           </p>
 
           <div className="result-actions">
-            <button className="primary-button" onClick={restartQuiz}>
+            <button
+              className="primary-button"
+              onClick={restartQuiz}
+            >
               Пройти ещё раз ↻
             </button>
 
-            <button className="secondary-button" onClick={onBack}>
+            <button
+              className="secondary-button"
+              onClick={onBack}
+            >
               К другим темам
             </button>
           </div>
@@ -180,7 +271,7 @@ function Quiz({
           <span className="eyebrow">РАЗБОР РЕЗУЛЬТАТОВ</span>
           <h2>Разберём ошибки</h2>
 
-          {questions.map((question, index) => {
+          {quizQuestions.map((question, index) => {
             const isCorrect =
               answers[index] === question.correctAnswer
 
@@ -224,7 +315,8 @@ function Quiz({
     )
   }
 
-  const progress = ((currentIndex + 1) / questions.length) * 100
+  const progress =
+    ((currentIndex + 1) / quizQuestions.length) * 100
 
   return (
     <section className="quiz-page">
@@ -235,12 +327,15 @@ function Quiz({
       <div className="quiz-header">
         <span className="eyebrow">{topicTitle.toUpperCase()}</span>
         <h2>Проверка знаний</h2>
-        <p>Выбери один правильный ответ.</p>
+        <p>
+          Выбери один правильный ответ. Вопросы и варианты
+          ответов перемешиваются в каждой попытке.
+        </p>
       </div>
 
       <div className="quiz-progress-info">
         <span>
-          Вопрос {currentIndex + 1} из {questions.length}
+          Вопрос {currentIndex + 1} из {quizQuestions.length}
         </span>
 
         <span>{Math.round(progress)}%</span>
@@ -255,7 +350,8 @@ function Quiz({
 
       <div className="quiz-card">
         <span className="eyebrow">
-          ВОПРОС {String(currentIndex + 1).padStart(2, '0')}
+          ВОПРОС{' '}
+          {String(currentIndex + 1).padStart(2, '0')}
         </span>
 
         <h3 className="quiz-question">
@@ -284,7 +380,7 @@ function Quiz({
             return (
               <button
                 type="button"
-                key={option}
+                key={`${currentQuestion.id}-${index}`}
                 className={classes}
                 disabled={checked}
                 onClick={() => setSelectedOption(index)}
@@ -346,7 +442,7 @@ function Quiz({
             >
               {saving
                 ? 'Сохраняем...'
-                : currentIndex === questions.length - 1
+                : currentIndex === quizQuestions.length - 1
                   ? 'Результаты →'
                   : 'Далее →'}
             </button>
